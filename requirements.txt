@@ -3,7 +3,7 @@ easydict
 h5py
 matplotlib
 numpy
-open3d==0.9 # if you're on newer versions of python / mamba / conda, installing may throw an error. installing latest open3d seems to work 
+open3d # if you're on newer versions of python / mamba / conda, installing may throw an error. installing latest open3d seems to work 
 opencv-python
 pyyaml
 scipy

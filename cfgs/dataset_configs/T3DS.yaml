@@ -1,0 +1,7 @@
+NAME: T3DS
+CATEGORY_FILE_PATH: data/T3DS/T3DS.json
+N_POINTS: 2048
+N_RENDERINGS: 3
+PARTIAL_POINTS_PATH: /home/t3ds_pcn/%s/partial/%s/%s/%02d.pcd
+COMPLETE_POINTS_PATH: /home/t3ds_pcn/%s/complete/%s/%s.pcd
+CARS: FALSE

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import os
 import json
+import open3d as o3d
 from tools import builder
 from utils import misc, dist_utils
 import time
@@ -84,7 +85,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         batch_start_time = time.time()
         batch_time = AverageMeter()
         data_time = AverageMeter()
-        losses = AverageMeter(['SparseLoss', 'DenseLoss'])
+        losses = AverageMeter(['SparseLoss', 'DenseLoss', 'lfa'])
 
         num_iter = 0
 
@@ -94,7 +95,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             data_time.update(time.time() - batch_start_time)
             npoints = config.dataset.train._base_.N_POINTS
             dataset_name = config.dataset.train._base_.NAME
-            if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet':
+            if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet' or dataset_name == 'T3DS':
                 partial = data[0].cuda()
                 gt = data[1].cuda()
                 if config.dataset.train._base_.CARS:
@@ -111,11 +112,12 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
             num_iter += 1
            
-            ret = base_model(partial)
+            ret, lfa = base_model(partial, gt)
+            lfa = lfa.mean()
             
             sparse_loss, dense_loss = base_model.module.get_loss(ret, gt, epoch)
          
-            _loss = sparse_loss + dense_loss 
+            _loss = sparse_loss + dense_loss + lfa
             _loss.backward()
 
             # forward
@@ -128,9 +130,10 @@ def run_net(args, config, train_writer=None, val_writer=None):
             if args.distributed:
                 sparse_loss = dist_utils.reduce_tensor(sparse_loss, args)
                 dense_loss = dist_utils.reduce_tensor(dense_loss, args)
-                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
+                lfa = dist_utils.reduce_tensor(lfa, args)
+                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000, lfa.item()])
             else:
-                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000])
+                losses.update([sparse_loss.item() * 1000, dense_loss.item() * 1000, lfa.item()])
 
 
             if args.distributed:
@@ -140,6 +143,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
             if train_writer is not None:
                 train_writer.add_scalar('Loss/Batch/Sparse', sparse_loss.item() * 1000, n_itr)
                 train_writer.add_scalar('Loss/Batch/Dense', dense_loss.item() * 1000, n_itr)
+                train_writer.add_scalar('Loss/Batch/lfa', lfa.item(), n_itr)
 
             batch_time.update(time.time() - batch_start_time)
             batch_start_time = time.time()
@@ -163,6 +167,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
         if train_writer is not None:
             train_writer.add_scalar('Loss/Epoch/Sparse', losses.avg(0), epoch)
             train_writer.add_scalar('Loss/Epoch/Dense', losses.avg(1), epoch)
+            train_writer.add_scalar('Loss/Epoch/lfa', losses.avg(2), epoch)
         print_log('[Training] EPOCH: %d EpochTime = %.3f (s) Losses = %s' %
             (epoch,  epoch_end_time - epoch_start_time, ['%.4f' % l for l in losses.avg()]), logger = logger)
 
@@ -199,7 +204,7 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
 
             npoints = config.dataset.val._base_.N_POINTS
             dataset_name = config.dataset.val._base_.NAME
-            if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet':
+            if dataset_name == 'PCN' or dataset_name == 'Completion3D' or dataset_name == 'Projected_ShapeNet' or dataset_name == 'T3DS':
                 partial = data[0].cuda()
                 gt = data[1].cuda()
             elif dataset_name == 'ShapeNet':
@@ -209,7 +214,7 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
             else:
                 raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
-            ret = base_model(partial)
+            ret, lfa = base_model(partial, gt)
             coarse_points = ret[0]
             dense_points = ret[-1]
 
@@ -273,6 +278,9 @@ def validate(base_model, test_dataloader, epoch, ChamferDisL1, ChamferDisL2, val
      
     # Print testing results
     shapenet_dict = json.load(open('./data/shapenet_synset_dict.json', 'r'))
+    if config.dataset.val._base_.NAME == 'T3DS':
+        shapenet_dict
+    shapenet_dict = json.load(open('/home/wdzhihan/sjn/PoinTr/data/T3DSt_synset_dict.json', 'r'))
     print_log('============================ TEST RESULTS ============================',logger=logger)
     msg = ''
     msg += 'Taxonomy\t'
@@ -313,7 +321,7 @@ crop_ratio = {
     'hard':3/4
 }
 
-def test_net(args, config):
+def test_net(args, config, val_writer=None):
     logger = get_logger(args.log_name)
     print_log('Tester start ... ', logger = logger)
     _, test_dataloader = builder.dataset_builder(args, config.dataset.test)
@@ -350,11 +358,11 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
 
             npoints = config.dataset.test._base_.N_POINTS
             dataset_name = config.dataset.test._base_.NAME
-            if dataset_name == 'PCN' or dataset_name == 'Projected_ShapeNet':
+            if dataset_name == 'PCN' or dataset_name == 'Projected_ShapeNet' or dataset_name == 'Completion3D' or dataset_name == 'T3DS':
                 partial = data[0].cuda()
                 gt = data[1].cuda()
 
-                ret = base_model(partial)
+                ret, lfa = base_model(partial, gt)
                 coarse_points = ret[0]
                 dense_points = ret[-1]
 
@@ -428,6 +436,9 @@ def test(base_model, test_dataloader, ChamferDisL1, ChamferDisL2, args, config, 
 
     # Print testing results
     shapenet_dict = json.load(open('./data/shapenet_synset_dict.json', 'r'))
+    if config.dataset.val._base_.NAME == 'T3DS':
+        shapenet_dict
+    shapenet_dict = json.load(open('/home/wdzhihan/sjn/PoinTr/data/T3DSt_synset_dict.json', 'r'))
     print_log('============================ TEST RESULTS ============================',logger=logger)
     msg = ''
     msg += 'Taxonomy\t'
